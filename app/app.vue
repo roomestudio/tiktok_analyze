@@ -1,10 +1,21 @@
 <template>
   <div class="container">
     <div class="card">
-      <h1>📊 Analizador Completo de TikTok</h1>
+      <h1>📊 Analizador de Redes Sociales</h1>
       <p class="subtitle">Extrae estadísticas detalladas y métricas avanzadas</p>
 
-      <div class="input-group">
+      <!-- Tabs -->
+      <div class="tabs">
+        <button :class="['tab', activeTab === 'tiktok' && 'tab-active']" @click="activeTab = 'tiktok'">
+          🎵 TikTok Video
+        </button>
+        <button :class="['tab', activeTab === 'instagram' && 'tab-active']" @click="activeTab = 'instagram'">
+          📸 Instagram Perfil
+        </button>
+      </div>
+
+      <!-- TikTok Input -->
+      <div v-if="activeTab === 'tiktok'" class="input-group">
         <input
           v-model="tiktokUrl"
           type="text"
@@ -12,12 +23,22 @@
           class="input"
           @keyup.enter="analyzeVideo"
         />
-        <button 
-          @click="analyzeVideo" 
-          :disabled="loading || !tiktokUrl"
-          class="button"
-        >
+        <button @click="analyzeVideo" :disabled="loading || !tiktokUrl" class="button">
           {{ loading ? 'Analizando...' : 'Analizar' }}
+        </button>
+      </div>
+
+      <!-- Instagram Input -->
+      <div v-if="activeTab === 'instagram'" class="input-group">
+        <input
+          v-model="instagramUsername"
+          type="text"
+          placeholder="@username o username de Instagram..."
+          class="input"
+          @keyup.enter="analyzeInstagram"
+        />
+        <button @click="analyzeInstagram" :disabled="loading || !instagramUsername" class="button ig-button">
+          {{ loading ? 'Analizando...' : 'Analizar Perfil' }}
         </button>
       </div>
 
@@ -225,6 +246,138 @@
           </div>
         </section>
       </div>
+      <!-- Resultados Instagram -->
+      <div v-if="instagramData" class="results">
+        <div class="export-buttons">
+          <button @click="handleIgExportJSON" class="export-btn">📄 Exportar JSON</button>
+          <button @click="handleIgExportMarkdown" class="export-btn">📝 Exportar Markdown</button>
+        </div>
+
+        <section class="section">
+          <h2>👤 Perfil de Instagram</h2>
+          <div class="author-card">
+            <img v-if="instagramData.profile.profile_pic_url" :src="instagramData.profile.profile_pic_url" class="avatar" />
+            <div class="author-info">
+              <div class="author-name">
+                {{ instagramData.profile.full_name || instagramData.profile.username }}
+                <span v-if="instagramData.profile.is_verified" class="verified">✓</span>
+              </div>
+              <div class="author-username">@{{ instagramData.profile.username }}</div>
+              <div class="author-bio">{{ instagramData.profile.biography }}</div>
+              <div v-if="instagramData.profile.external_url" class="author-bio">
+                🔗 <a :href="instagramData.profile.external_url" target="_blank">{{ instagramData.profile.external_url }}</a>
+              </div>
+              <div class="author-stats">
+                <span>👥 {{ fmtIg(instagramData.profile.followers_count) }} seguidores</span>
+                <span>➡️ {{ fmtIg(instagramData.profile.following_count) }} siguiendo</span>
+                <span>🖼️ {{ fmtIg(instagramData.profile.posts_count) }} posts</span>
+              </div>
+              <div class="author-stats" style="margin-top:8px">
+                <span v-if="instagramData.profile.is_business_account">🏢 Business</span>
+                <span v-else-if="instagramData.profile.is_professional_account">⭐ Creator</span>
+                <span v-else>👤 Personal</span>
+                <span v-if="instagramData.profile.is_private">🔒 Privada</span>
+                <span v-if="instagramData.benchmarks.account_size_category">📊 {{ instagramData.benchmarks.account_size_category }}</span>
+                <span v-if="instagramData.profile.business_category_name">{{ instagramData.profile.business_category_name }}</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>📈 Métricas de Engagement</h2>
+          <div class="metadata-grid">
+            <div class="meta-item">
+              <span class="meta-label">Total Likes</span>
+              <span class="meta-value">{{ fmtIg(instagramData.engagement_metrics.overall.total_likes) }}</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Total Comentarios</span>
+              <span class="meta-value">{{ fmtIg(instagramData.engagement_metrics.overall.total_comments) }}</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Avg Likes/Post</span>
+              <span class="meta-value">{{ instagramData.engagement_metrics.overall.avg_likes_per_post }}</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Avg Comentarios/Post</span>
+              <span class="meta-value">{{ instagramData.engagement_metrics.overall.avg_comments_per_post }}</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Tasa de Engagement</span>
+              <span class="meta-value">{{ instagramData.engagement_metrics.overall.engagement_rate_by_followers ?? 'N/D' }}%</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Posts analizados</span>
+              <span class="meta-value">{{ instagramData.extraction_metadata.posts_extracted }}</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>🖼️ Por Tipo de Contenido</h2>
+          <div class="table-wrapper">
+            <table class="stats-table">
+              <thead>
+                <tr><th>Tipo</th><th>Posts</th><th>Avg Likes</th><th>Avg Comentarios</th><th>Avg Engagement</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="(v, k) in instagramData.engagement_metrics.by_content_type" :key="k">
+                  <td>{{ k }}</td><td>{{ v.count }}</td><td>{{ v.avg_likes }}</td><td>{{ v.avg_comments }}</td><td>{{ v.avg_engagement_rate ?? 'N/D' }}%</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>⏰ Patrones de Publicación</h2>
+          <div class="metadata-grid">
+            <div class="meta-item">
+              <span class="meta-label">Últimos 30 días</span>
+              <span class="meta-value">{{ instagramData.posting_patterns.posting_frequency_last_30_days }} posts</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Últimos 90 días</span>
+              <span class="meta-value">{{ instagramData.posting_patterns.posting_frequency_last_90_days }} posts</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Mejor día</span>
+              <span class="meta-value">{{ instagramData.posting_patterns.best_performing_day || 'N/D' }}</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Mejor hora</span>
+              <span class="meta-value">{{ instagramData.posting_patterns.best_performing_hour !== null ? instagramData.posting_patterns.best_performing_hour + ':00' : 'N/D' }}</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>🏷️ Top Hashtags</h2>
+          <div class="tags">
+            <span class="tag" v-for="tag in instagramData.hashtags_analysis.top_10_by_frequency" :key="tag">{{ tag }}</span>
+          </div>
+          <div class="metadata-grid" style="margin-top:15px">
+            <div class="meta-item">
+              <span class="meta-label">Hashtags únicos</span>
+              <span class="meta-value">{{ instagramData.hashtags_analysis.unique_hashtags_count }}</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Avg por post</span>
+              <span class="meta-value">{{ instagramData.hashtags_analysis.avg_hashtags_per_post }}</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Posts sin hashtags</span>
+              <span class="meta-value">{{ instagramData.hashtags_analysis.posts_without_hashtags }}</span>
+            </div>
+          </div>
+        </section>
+
+        <div class="error" style="background:#fff3cd;color:#856404;border-color:#ffc107">
+          ⚠️ <strong>Datos limitados por scraping público.</strong> Stories, Highlights, Seguidores detallados, Reach/Impressions/Saves requieren Instagram Graph API.
+          <br>Completitud del dataset: {{ instagramData.extraction_metadata.data_completeness_percent }}%
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -232,33 +385,32 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import type { TikTokVideoData } from '../types/tiktok';
+import type { InstagramDataset } from '../types/instagram';
 import { useExport } from '../composables/useExport';
+import { useInstagramExport } from '../composables/useInstagramExport';
 
+const activeTab = ref<'tiktok' | 'instagram'>('tiktok');
+
+// TikTok
 const tiktokUrl = ref('');
 const videoData = ref<TikTokVideoData | null>(null);
+
+// Instagram
+const instagramUsername = ref('');
+const instagramData = ref<InstagramDataset | null>(null);
+
 const loading = ref(false);
 const error = ref('');
 
 const analyzeVideo = async () => {
   if (!tiktokUrl.value) return;
-
   loading.value = true;
   error.value = '';
   videoData.value = null;
-
   try {
-    const response = await $fetch('/api/tiktok', {
-      method: 'POST',
-      body: {
-        url: tiktokUrl.value
-      }
-    });
-
-    if (response.success && response.data) {
-      videoData.value = response.data;
-    } else {
-      error.value = response.error || 'Error al obtener datos';
-    }
+    const response = await $fetch('/api/tiktok', { method: 'POST', body: { url: tiktokUrl.value } });
+    if (response.success && response.data) videoData.value = response.data;
+    else error.value = response.error || 'Error al obtener datos';
   } catch (e: any) {
     error.value = e.message || 'Error de conexión';
   } finally {
@@ -266,17 +418,35 @@ const analyzeVideo = async () => {
   }
 };
 
+const analyzeInstagram = async () => {
+  if (!instagramUsername.value) return;
+  loading.value = true;
+  error.value = '';
+  instagramData.value = null;
+  try {
+    const response = await $fetch('/api/instagram-profile', { method: 'POST', body: { username: instagramUsername.value } });
+    if (response.success && response.data) instagramData.value = response.data;
+    else error.value = response.error || 'Error al obtener datos de Instagram';
+  } catch (e: any) {
+    error.value = e.message || 'Error de conexión';
+  } finally {
+    loading.value = false;
+  }
+};
+
+const fmtIg = (n: number | null) => {
+  if (n === null || n === undefined) return 'N/D';
+  if (n >= 1e9) return (n/1e9).toFixed(1)+'B';
+  if (n >= 1e6) return (n/1e6).toFixed(1)+'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1)+'K';
+  return n.toLocaleString();
+};
+
 const formatNumber = (num?: number): string => {
   if (!num && num !== 0) return 'N/A';
-  
-  if (num >= 1000000000) {
-    return (num / 1000000000).toFixed(1) + 'B';
-  } else if (num >= 1000000) {
-    return (num / 1000000).toFixed(1) + 'M';
-  } else if (num >= 1000) {
-    return (num / 1000).toFixed(1) + 'K';
-  }
-  
+  if (num >= 1000000000) return (num / 1000000000).toFixed(1) + 'B';
+  if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+  if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
   return num.toLocaleString();
 };
 
@@ -289,40 +459,17 @@ const formatDuration = (seconds: number): string => {
 
 const formatDate = (dateStr: string): string => {
   if (!dateStr) return 'N/A';
-  const date = new Date(dateStr);
-  return date.toLocaleDateString('es-ES', { 
-    year: 'numeric', 
-    month: 'long', 
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  });
+  return new Date(dateStr).toLocaleDateString('es-ES', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 
-// Funciones de exportación
-// En Nuxt, los composables se auto-importan desde la carpeta composables/
 const { exportToJSON, exportToCSV, exportToMarkdown } = useExport();
+const { exportToJSON: igExportJSON, exportToMarkdown: igExportMarkdown } = useInstagramExport();
 
-const handleExportJSON = () => {
-  if (videoData.value) {
-    const filename = `tiktok-${videoData.value.metadata.id}.json`;
-    exportToJSON(videoData.value, filename);
-  }
-};
-
-const handleExportCSV = () => {
-  if (videoData.value) {
-    const filename = `tiktok-${videoData.value.metadata.id}.csv`;
-    exportToCSV(videoData.value, filename);
-  }
-};
-
-const handleExportMarkdown = () => {
-  if (videoData.value) {
-    const filename = `tiktok-${videoData.value.metadata.id}.md`;
-    exportToMarkdown(videoData.value, filename);
-  }
-};
+const handleExportJSON = () => { if (videoData.value) exportToJSON(videoData.value, `tiktok-${videoData.value.metadata.id}.json`); };
+const handleExportCSV = () => { if (videoData.value) exportToCSV(videoData.value, `tiktok-${videoData.value.metadata.id}.csv`); };
+const handleExportMarkdown = () => { if (videoData.value) exportToMarkdown(videoData.value, `tiktok-${videoData.value.metadata.id}.md`); };
+const handleIgExportJSON = () => { if (instagramData.value) igExportJSON(instagramData.value); };
+const handleIgExportMarkdown = () => { if (instagramData.value) igExportMarkdown(instagramData.value); };
 </script>
 
 <style scoped>
@@ -831,5 +978,36 @@ h1 {
   .metric-card.viral {
     grid-column: span 1;
   }
+}
+
+.tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 25px;
+  border-bottom: 2px solid #e0e0e0;
+}
+
+.tab {
+  padding: 12px 24px;
+  border: none;
+  background: none;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #999;
+  cursor: pointer;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.tab:hover { color: #667eea; }
+
+.tab-active {
+  color: #667eea;
+  border-bottom-color: #667eea;
+}
+
+.ig-button {
+  background: linear-gradient(135deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%);
 }
 </style>

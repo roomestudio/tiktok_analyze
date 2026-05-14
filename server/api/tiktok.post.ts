@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { load } from 'cheerio';
 import type { TikTokVideoData, TikTokApiResponse } from '../../types/tiktok';
 
 export default defineEventHandler(async (event): Promise<TikTokApiResponse> => {
@@ -13,13 +14,15 @@ export default defineEventHandler(async (event): Promise<TikTokApiResponse> => {
       };
     }
 
-    // Extraer el ID del video de la URL
-    const videoId = extractVideoId(url);
+    // Extraer el ID del video de la URL (opcional aquí, se reintenta después de fetch si es necesario)
+    let videoId = extractVideoId(url);
     
-    if (!videoId) {
+    // Si no hay ID pero es un link corto (vt.tiktok.com), permitimos continuar
+    // porque fetchTikTokData seguirá el redireccionamiento
+    if (!videoId && !url.includes('vt.tiktok.com') && !url.includes('vm.tiktok.com')) {
       return {
         success: false,
-        error: 'No se pudo extraer el ID del video'
+        error: 'No se pudo extraer el ID del video de la URL proporcionada'
       };
     }
 
@@ -44,7 +47,10 @@ function extractVideoId(url: string): string | null {
   const patterns = [
     /\/video\/(\d+)/,
     /\/v\/(\d+)/,
-    /tiktok\.com\/@[\w.-]+\/video\/(\d+)/
+    /tiktok\.com\/@[\w.-]+\/video\/(\d+)/,
+    /tiktok\.com\/v\/(\d+)/,
+    /video\.html\?id=(\d+)/,
+    /(\d{15,25})/ // Cualquier cadena de 15-25 dígitos probablemente sea el ID
   ];
 
   for (const pattern of patterns) {
@@ -57,52 +63,122 @@ function extractVideoId(url: string): string | null {
   return null;
 }
 
+
 async function fetchTikTokData(url: string): Promise<TikTokVideoData> {
   try {
     const headers = {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-      'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-      'Referer': 'https://www.tiktok.com/',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+      'Sec-Ch-Ua': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
+      'Sec-Ch-Ua-Mobile': '?0',
+      'Sec-Ch-Ua-Platform': '"Windows"',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1',
     };
 
     const response = await axios.get(url, { 
       headers,
-      timeout: 15000
+      timeout: 20000,
+      maxRedirects: 10
     });
 
     const html = response.data;
-
-    // Buscar el JSON embebido en el HTML
-    const jsonMatch = html.match(/<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application\/json">(.*?)<\/script>/);
+    const finalUrl = response.request?.res?.responseUrl || url;
+    const $ = load(html);
     
-    if (jsonMatch && jsonMatch[1]) {
-      const data = JSON.parse(jsonMatch[1]);
-      const videoDetail = data?.__DEFAULT_SCOPE__?.['webapp.video-detail']?.itemInfo?.itemStruct;
+    let videoDetail = null;
 
-      if (videoDetail) {
-        return parseCompleteVideoData(url, videoDetail);
+    // 1. Intentar con __UNIVERSAL_DATA_FOR_REHYDRATION__
+    const universalData = $('#__UNIVERSAL_DATA_FOR_REHYDRATION__').html();
+    if (universalData) {
+      try {
+        const data = JSON.parse(universalData);
+        videoDetail = data?.__DEFAULT_SCOPE__?.['webapp.video-detail']?.itemInfo?.itemStruct;
+      } catch (e) {
+        console.warn('Error al parsear __UNIVERSAL_DATA_FOR_REHYDRATION__');
       }
     }
 
-    // Método alternativo: buscar SIGI_STATE
-    const sigiMatch = html.match(/<script id="SIGI_STATE" type="application\/json">(.*?)<\/script>/);
-    if (sigiMatch && sigiMatch[1]) {
-      const sigiData = JSON.parse(sigiMatch[1]);
-      const videoId = extractVideoId(url);
-      const videoDetail = sigiData?.ItemModule?.[videoId];
-      
-      if (videoDetail) {
-        return parseCompleteVideoData(url, videoDetail);
+    // 2. Intentar con SIGI_STATE si el anterior falló
+    if (!videoDetail) {
+      const sigiData = $('#SIGI_STATE').html();
+      if (sigiData) {
+        try {
+          const parsedSigi = JSON.parse(sigiData);
+          const videoId = extractVideoId(finalUrl); // Usar finalUrl
+          videoDetail = parsedSigi?.ItemModule?.[videoId || ''];
+        } catch (e) {
+          console.warn('Error al parsear SIGI_STATE');
+        }
       }
     }
 
-    throw new Error('No se pudo extraer los datos del video');
+
+    // 3. Intentar con __INITIAL_STATE__
+    if (!videoDetail) {
+      const initialState = $('#__INITIAL_STATE__').html();
+      if (initialState) {
+        try {
+          const parsedState = JSON.parse(initialState);
+          videoDetail = parsedState?.videoDetail || parsedState?.itemInfo?.itemStruct;
+        } catch (e) {
+          console.warn('Error al parsear __INITIAL_STATE__');
+        }
+      }
+    }
+
+    // 4. Intentar buscar cualquier JSON que parezca contener itemStruct
+    if (!videoDetail) {
+      $('script[type="application/json"]').each((_, el) => {
+        const content = $(el).html();
+        if (content && content.includes('itemStruct')) {
+          try {
+            const data = JSON.parse(content);
+            // Buscar recursivamente itemStruct? No, mejor probar patrones comunes
+            const found = findItemStruct(data);
+            if (found) {
+              videoDetail = found;
+              return false; // break loop
+            }
+          } catch (e) {}
+        }
+      });
+    }
+
+    if (videoDetail) {
+      return parseCompleteVideoData(url, videoDetail);
+    }
+
+    // Si falló todo, puede que estemos ante un captcha o bloqueo
+    if (html.includes('verify-wrap') || html.includes('captcha')) {
+      throw new Error('TikTok ha solicitado una verificación (Captcha). Por favor, intenta más tarde.');
+    }
+
+    throw new Error('No se pudo extraer los datos del video. TikTok podría haber cambiado su estructura.');
 
   } catch (error: any) {
     throw new Error(`Error al obtener datos: ${error.message}`);
   }
 }
+
+function findItemStruct(obj: any): any {
+  if (!obj || typeof obj !== 'object') return null;
+  if (obj.itemStruct) return obj.itemStruct;
+  if (obj.itemInfo?.itemStruct) return obj.itemInfo.itemStruct;
+  
+  for (const key in obj) {
+    const result = findItemStruct(obj[key]);
+    if (result) return result;
+  }
+  return null;
+}
+
 
 function parseCompleteVideoData(url: string, videoDetail: any): TikTokVideoData {
   const stats = videoDetail.stats || {};
